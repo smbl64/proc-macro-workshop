@@ -1,10 +1,10 @@
 use proc_macro::TokenStream;
 use proc_macro2::Ident;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{parse_macro_input, Data, DeriveInput, Fields, FieldsNamed};
 
 #[proc_macro_derive(Builder)]
-pub fn derive(input: TokenStream) -> TokenStream {
+pub fn derive(input: proc_macro::TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = input.ident;
 
@@ -21,7 +21,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
 }
 
 fn generate(struct_name: &Ident, fields: &FieldsNamed) -> proc_macro2::TokenStream {
-    let builder_name = quote::format_ident!("{}Builder", struct_name);
+    let builder_name = format_ident!("{}Builder", struct_name);
     let struct_ext = make_struct_ext(&builder_name, fields, struct_name);
     let builder = make_builder(&builder_name, &fields);
 
@@ -77,13 +77,36 @@ fn make_builder(builder_name: &Ident, fields: &FieldsNamed) -> proc_macro2::Toke
         })
         .collect();
 
+    let setters = make_builder_setters(&fields);
     let builder = quote! {
         pub struct #builder_name {
             #(#builder_fields),*
         }
+
+        impl #builder_name {
+            #(#setters)*
+        }
     };
 
     builder
+}
+
+fn make_builder_setters(fields: &FieldsNamed) -> Vec<proc_macro2::TokenStream> {
+    fields
+        .named
+        .pairs()
+        .map(|p| {
+            let field = p.value();
+            let name = &field.ident.as_ref().unwrap();
+            let ty = &field.ty;
+            quote! {
+                fn #name(&mut self, #name: #ty) -> &mut Self {
+                    self.#name = Some(#name);
+                    self
+                }
+            }
+        })
+        .collect()
 }
 
 fn pretty_print(ts: &proc_macro2::TokenStream) -> String {
