@@ -127,7 +127,7 @@ fn make_build_method(struct_name: &Ident, fields: &FieldsNamed) -> proc_macro2::
         .collect();
 
     quote! {
-        fn build (self) -> Result<#struct_name, Box<dyn std::error::Error>> {
+        fn build (&mut self) -> Result<#struct_name, Box<dyn std::error::Error>> {
             #(
             if self.#names.is_none() {
                 let msg = format!("{} has no value.", stringify!(#names));
@@ -136,9 +136,7 @@ fn make_build_method(struct_name: &Ident, fields: &FieldsNamed) -> proc_macro2::
             )*
 
             Ok(#struct_name {
-                #(
-                    #names: self.#names.unwrap(),
-                )*
+                #(#names: std::mem::take(&mut self.#names).unwrap()),*
             })
 
         }
