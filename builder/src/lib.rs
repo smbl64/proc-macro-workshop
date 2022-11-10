@@ -1,7 +1,9 @@
 use proc_macro::TokenStream;
 use proc_macro2::Ident;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, Data, DeriveInput, Fields, FieldsNamed};
+use syn::{
+    parse_macro_input, Data, DeriveInput, Fields, FieldsNamed, GenericArgument, PathArguments, Type,
+};
 
 #[proc_macro_derive(Builder)]
 pub fn derive(input: proc_macro::TokenStream) -> TokenStream {
@@ -73,7 +75,12 @@ fn make_builder(
         .map(|ele| {
             let f = ele.value();
             let name = f.ident.as_ref().unwrap();
-            let ty = &f.ty;
+            let mut ty = &f.ty;
+
+            let inner_ty = find_inner_type(ty);
+            if inner_ty.is_some() {
+                ty = inner_ty.unwrap();
+            }
 
             quote! {
                 #name: Option<#ty>
@@ -105,7 +112,13 @@ fn make_builder_setters(fields: &FieldsNamed) -> Vec<proc_macro2::TokenStream> {
         .map(|p| {
             let field = p.value();
             let name = &field.ident.as_ref().unwrap();
-            let ty = &field.ty;
+            let mut ty = &field.ty;
+            let inner_ty = find_inner_type(ty);
+
+            if inner_ty.is_some() {
+                ty = inner_ty.unwrap();
+            }
+
             quote! {
                 fn #name(&mut self, #name: #ty) -> &mut Self {
                     self.#name = Some(#name);
@@ -117,9 +130,20 @@ fn make_builder_setters(fields: &FieldsNamed) -> Vec<proc_macro2::TokenStream> {
 }
 
 fn make_build_method(struct_name: &Ident, fields: &FieldsNamed) -> proc_macro2::TokenStream {
-    let names: Vec<_> = fields
+    let mandatory_field_names: Vec<_> = fields
         .named
         .pairs()
+        .filter(|p| find_inner_type(&p.value().ty).is_none())
+        .map(|p| {
+            let field = p.value();
+            field.ident.as_ref().unwrap()
+        })
+        .collect();
+
+    let optional_field_names: Vec<_> = fields
+        .named
+        .pairs()
+        .filter(|p| find_inner_type(&p.value().ty).is_some())
         .map(|p| {
             let field = p.value();
             field.ident.as_ref().unwrap()
@@ -129,14 +153,15 @@ fn make_build_method(struct_name: &Ident, fields: &FieldsNamed) -> proc_macro2::
     quote! {
         fn build (&mut self) -> Result<#struct_name, Box<dyn std::error::Error>> {
             #(
-            if self.#names.is_none() {
-                let msg = format!("{} has no value.", stringify!(#names));
+            if self.#mandatory_field_names.is_none() {
+                let msg = format!("{} has no value.", stringify!(#mandatory_field_names));
                 return Err(msg.into());
             }
             )*
 
             Ok(#struct_name {
-                #(#names: std::mem::take(&mut self.#names).unwrap()),*
+                #(#mandatory_field_names: std::mem::take(&mut self.#mandatory_field_names).unwrap(),)*
+                #(#optional_field_names: std::mem::take(&mut self.#optional_field_names),)*
             })
 
         }
@@ -146,4 +171,30 @@ fn make_build_method(struct_name: &Ident, fields: &FieldsNamed) -> proc_macro2::
 fn pretty_print(ts: &proc_macro2::TokenStream) -> String {
     let file = syn::parse_file(&ts.to_string()).unwrap();
     prettyplease::unparse(&file)
+}
+
+/// Find T in an `Option<T>` declaration.
+/// See "tests/06-optional-field.rs" for the pattern.
+fn find_inner_type(ty: &Type) -> Option<&Type> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+
+    let Some(path_segment) = type_path.path.segments.first() else {
+        return None;
+    };
+
+    if path_segment.ident != "Option" {
+        return None;
+    }
+
+    let PathArguments::AngleBracketed(ref args) = path_segment.arguments else {
+        return None;
+    };
+
+    let Some(GenericArgument::Type(ref t)) = args.args.first() else {
+        return None;
+    };
+
+    Some(t)
 }
