@@ -18,7 +18,7 @@ pub fn derive(input: proc_macro::TokenStream) -> TokenStream {
     };
 
     let result = generate(&struct_name, &fields);
-    eprintln!("{}", pretty_print(&result));
+    //eprintln!("{}", pretty_print(&result));
     TokenStream::from(result)
 }
 
@@ -33,22 +33,46 @@ fn generate(struct_name: &Ident, fields: &FieldsNamed) -> proc_macro2::TokenStre
     }
 }
 
+struct InternalField<'a> {
+    name: &'a Ident,
+    ty: &'a Type,
+    inner_ty: Option<&'a Type>,
+}
+
+impl<'a> InternalField<'a> {
+    /// If `self.ty` is `Option<T>`, return `T`. Otherwise return `self.ty`.
+    fn get_core_type(&self) -> &Type {
+        match self.inner_ty {
+            Some(t) => t,
+            None => self.ty,
+        }
+    }
+}
+
+fn transform_fields<'a>(fields: &'a FieldsNamed) -> Vec<InternalField<'a>> {
+    fields
+        .named
+        .pairs()
+        .map(|pair| {
+            let field = pair.value();
+            let ty = &field.ty;
+            let inner_ty = find_inner_type(ty);
+            let name = field.ident.as_ref().unwrap();
+
+            InternalField { name, ty, inner_ty }
+        })
+        .collect()
+}
+
 fn make_builder_factory(
     builder_name: &Ident,
     struct_fields: &FieldsNamed,
     struct_name: &Ident,
 ) -> proc_macro2::TokenStream {
-    let builder_initial_fields: Vec<_> = struct_fields
-        .named
-        .pairs()
-        .map(|pair| {
-            let field = pair.value();
-            let name = field.ident.as_ref().unwrap();
-            //if field.attrs.len() > 0 {
-            //    let a = field.attrs.first().unwrap();
-            //    dbg!(a);
-            //}
-
+    let builder_initial_fields: Vec<_> = transform_fields(struct_fields)
+        .into_iter()
+        .map(|f| {
+            let name = f.name;
             quote! {
                 #name: None
             }
@@ -73,18 +97,11 @@ fn make_builder(
     fields: &FieldsNamed,
 ) -> proc_macro2::TokenStream {
     // Map each "field: Type" to "field: Option<Type>"
-    let builder_fields: Vec<_> = fields
-        .named
-        .pairs()
-        .map(|pair| {
-            let field = pair.value();
-            let name = field.ident.as_ref().unwrap();
-            let mut ty = &field.ty;
-
-            let inner_ty = find_inner_type(ty);
-            if inner_ty.is_some() {
-                ty = inner_ty.unwrap();
-            }
+    let builder_fields: Vec<_> = transform_fields(fields)
+        .into_iter()
+        .map(|field| {
+            let name = field.name;
+            let ty = field.get_core_type();
 
             quote! {
                 #name: Option<#ty>
@@ -108,18 +125,11 @@ fn make_builder(
 }
 
 fn make_builder_setters(struct_fields: &FieldsNamed) -> Vec<proc_macro2::TokenStream> {
-    struct_fields
-        .named
-        .pairs()
-        .map(|p| {
-            let field = p.value();
-            let name = &field.ident.as_ref().unwrap();
-            let mut ty = &field.ty;
-            let inner_ty = find_inner_type(ty);
-
-            if inner_ty.is_some() {
-                ty = inner_ty.unwrap();
-            }
+    transform_fields(struct_fields)
+        .into_iter()
+        .map(|field| {
+            let name = field.name;
+            let ty = field.get_core_type();
 
             quote! {
                 fn #name(&mut self, #name: #ty) -> &mut Self {
@@ -132,24 +142,16 @@ fn make_builder_setters(struct_fields: &FieldsNamed) -> Vec<proc_macro2::TokenSt
 }
 
 fn make_build_method(struct_name: &Ident, struct_fields: &FieldsNamed) -> proc_macro2::TokenStream {
-    let mandatory_field_names: Vec<_> = struct_fields
-        .named
-        .pairs()
-        .filter(|p| find_inner_type(&p.value().ty).is_none())
-        .map(|p| {
-            let field = p.value();
-            field.ident.as_ref().unwrap()
-        })
+    let mandatory_field_names: Vec<_> = transform_fields(struct_fields)
+        .into_iter()
+        .filter(|f| f.inner_ty.is_none())
+        .map(|f| f.name)
         .collect();
 
-    let optional_field_names: Vec<_> = struct_fields
-        .named
-        .pairs()
-        .filter(|p| find_inner_type(&p.value().ty).is_some())
-        .map(|p| {
-            let field = p.value();
-            field.ident.as_ref().unwrap()
-        })
+    let optional_field_names: Vec<_> = transform_fields(struct_fields)
+        .into_iter()
+        .filter(|f| f.inner_ty.is_some())
+        .map(|f| f.name)
         .collect();
 
     quote! {
