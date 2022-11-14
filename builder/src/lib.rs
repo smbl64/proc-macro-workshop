@@ -5,45 +5,49 @@ use syn::{
     parse_macro_input, Data, DeriveInput, Fields, FieldsNamed, GenericArgument, PathArguments, Type,
 };
 
-#[proc_macro_derive(Builder)]
+#[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: proc_macro::TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let name = input.ident;
+    let struct_name = input.ident;
 
-    let Data::Struct(ds) = input.data  else {
+    let Data::Struct(ds) = input.data else {
         panic!("Only structs are supported.");
     };
     let Fields::Named(fields) = ds.fields else {
         panic!("Only named fields are supported.");
     };
 
-    let result = generate(&name, &fields);
+    let result = generate(&struct_name, &fields);
     eprintln!("{}", pretty_print(&result));
     TokenStream::from(result)
 }
 
 fn generate(struct_name: &Ident, fields: &FieldsNamed) -> proc_macro2::TokenStream {
     let builder_name = format_ident!("{}Builder", struct_name);
-    let struct_ext = make_struct_ext(&builder_name, fields, struct_name);
+    let builder_factory = make_builder_factory(&builder_name, fields, struct_name);
     let builder = make_builder(struct_name, &builder_name, fields);
 
     quote! {
-        #struct_ext
+        #builder_factory
         #builder
     }
 }
 
-fn make_struct_ext(
+fn make_builder_factory(
     builder_name: &Ident,
-    fields: &FieldsNamed,
+    struct_fields: &FieldsNamed,
     struct_name: &Ident,
 ) -> proc_macro2::TokenStream {
-    let builder_initial_fields: Vec<_> = fields
+    let builder_initial_fields: Vec<_> = struct_fields
         .named
         .pairs()
-        .map(|ele| {
-            let f = ele.value();
-            let name = f.ident.as_ref().unwrap();
+        .map(|pair| {
+            let field = pair.value();
+            let name = field.ident.as_ref().unwrap();
+            //if field.attrs.len() > 0 {
+            //    let a = field.attrs.first().unwrap();
+            //    dbg!(a);
+            //}
 
             quote! {
                 #name: None
@@ -51,7 +55,7 @@ fn make_struct_ext(
         })
         .collect();
 
-    let struct_ext = quote! {
+    let builder_factory = quote! {
         impl #struct_name {
             pub fn builder() -> #builder_name {
                 #builder_name {
@@ -60,7 +64,7 @@ fn make_struct_ext(
             }
         }
     };
-    struct_ext
+    builder_factory
 }
 
 fn make_builder(
@@ -72,10 +76,10 @@ fn make_builder(
     let builder_fields: Vec<_> = fields
         .named
         .pairs()
-        .map(|ele| {
-            let f = ele.value();
-            let name = f.ident.as_ref().unwrap();
-            let mut ty = &f.ty;
+        .map(|pair| {
+            let field = pair.value();
+            let name = field.ident.as_ref().unwrap();
+            let mut ty = &field.ty;
 
             let inner_ty = find_inner_type(ty);
             if inner_ty.is_some() {
@@ -90,7 +94,7 @@ fn make_builder(
 
     let setters = make_builder_setters(&fields);
     let build_method = make_build_method(struct_name, fields);
-    let builder = quote! {
+    quote! {
         pub struct #builder_name {
             #(#builder_fields),*
         }
@@ -100,13 +104,11 @@ fn make_builder(
 
             #build_method
         }
-    };
-
-    builder
+    }
 }
 
-fn make_builder_setters(fields: &FieldsNamed) -> Vec<proc_macro2::TokenStream> {
-    fields
+fn make_builder_setters(struct_fields: &FieldsNamed) -> Vec<proc_macro2::TokenStream> {
+    struct_fields
         .named
         .pairs()
         .map(|p| {
@@ -129,8 +131,8 @@ fn make_builder_setters(fields: &FieldsNamed) -> Vec<proc_macro2::TokenStream> {
         .collect()
 }
 
-fn make_build_method(struct_name: &Ident, fields: &FieldsNamed) -> proc_macro2::TokenStream {
-    let mandatory_field_names: Vec<_> = fields
+fn make_build_method(struct_name: &Ident, struct_fields: &FieldsNamed) -> proc_macro2::TokenStream {
+    let mandatory_field_names: Vec<_> = struct_fields
         .named
         .pairs()
         .filter(|p| find_inner_type(&p.value().ty).is_none())
@@ -140,7 +142,7 @@ fn make_build_method(struct_name: &Ident, fields: &FieldsNamed) -> proc_macro2::
         })
         .collect();
 
-    let optional_field_names: Vec<_> = fields
+    let optional_field_names: Vec<_> = struct_fields
         .named
         .pairs()
         .filter(|p| find_inner_type(&p.value().ty).is_some())
